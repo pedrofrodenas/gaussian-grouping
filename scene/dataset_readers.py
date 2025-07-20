@@ -220,6 +220,7 @@ def readColmapSceneInfo(path, images, eval, object_path, llffhold=8, n_views=100
                 xyz, rgb, _ = read_points3D_text(txt_path)
             storePly(ply_path, xyz, rgb)
     try:
+        # pcd has positions, colors, normals
         pcd = fetchPly(ply_path)
     except:
         pcd = None

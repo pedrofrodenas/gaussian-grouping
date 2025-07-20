@@ -68,6 +68,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         gaussians.update_learning_rate(iteration)
 
+        # for param_group in gaussians.optimizer.param_groups:
+        #     if param_group['name'] == 'xyz':
+        #         current_lr = param_group['lr']
+        #         print(f"Current 'xyz' learning rate is: {current_lr}")
+
         # Every 1000 its we increase the levels of SH up to a maximum degree
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
@@ -98,7 +103,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # regularize at certain intervals
             logits3d = classifier(gaussians._objects_dc.permute(2,0,1))
             prob_obj3d = torch.softmax(logits3d,dim=0).squeeze().permute(1,0)
+            # Importante, entender esto bien
             loss_obj_3d = loss_cls_3d(gaussians._xyz.squeeze().detach(), prob_obj3d, opt.reg3d_k, opt.reg3d_lambda_val, opt.reg3d_max_points, opt.reg3d_sample_size)
+
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + loss_obj + loss_obj_3d
         else:
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + loss_obj
@@ -125,7 +132,22 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # Densification
             if iteration < opt.densify_until_iter:
                 # Keep track of max radii in image-space for pruning
+                # This is a tensor that stores the maximum 2D radius that each Gaussian has 
+                # projected to on the screen across all training views and iterations up to 
+                # the current point.
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+
+                # viewspace_point_tensor represemts the 3D coordinates of the centers 
+                # of the Gaussians, but transformed into view space
+                #  This calculates the Euclidean norm (magnitude) of the 2D gradient vector 
+                #  for each Gaussian. It effectively collapses the (dx, dy) gradient into a 
+                # single number representing the overall magnitude of the desired positional 
+                # change in the image plane.
+                # The calculated gradient norm is added to a running total, self.xyz_gradient_accum, 
+                # for each of the visible Gaussians. This variable accumulates the magnitude of 
+                # the positional gradient for each Gaussian over multiple training views.
+                # It calculates the average positional gradient for each Gaussian by 
+                # dividing the accumulated gradients by the counter
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:

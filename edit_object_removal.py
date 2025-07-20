@@ -28,6 +28,8 @@ from sklearn.decomposition import PCA
 from scipy.spatial import ConvexHull, Delaunay
 from render import feature_to_rgb, visualize_obj
 
+import onnxruntime as ort
+
 def points_inside_convex_hull(point_cloud, mask, remove_outliers=True, outlier_factor=1.0):
     """
     Given a point cloud and a mask indicating a subset of points, this function computes the convex hull of the 
@@ -68,18 +70,52 @@ def points_inside_convex_hull(point_cloud, mask, remove_outliers=True, outlier_f
 
     return inside_hull_tensor_mask
 
+class ONNXRemovalClassifier:
+    def __init__(self, onnx_model_path='/home/prodenas/Projects/gaussian-grouping/output/figuritas/point_cloud_object_removal/iteration_30000/classifier.onnx'):
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        self.session = ort.InferenceSession(onnx_model_path, providers=providers)
+        
+        # Cache input/output info
+        self.input_info = self.session.get_inputs()[0]
+        self.output_info = self.session.get_outputs()[0]
+        
+    def predict(self, input_tensor):
+        """Run inference on input tensor"""
+        # Convert to numpy
+        if self.input_info.type == 'tensor(float)':
+            input_numpy = input_tensor.detach().cpu().numpy().astype(np.float32)
+        else:
+            input_numpy = input_tensor.detach().cpu().numpy()
+        
+        # Run inference
+        ort_inputs = {self.input_info.name: input_numpy}
+        output_numpy = self.session.run([self.output_info.name], ort_inputs)[0]
+        
+        # Convert back to PyTorch tensor
+        return torch.from_numpy(output_numpy).cuda()
+
 def removal_setup(opt, model_path, iteration, views, gaussians, pipeline, background, classifier, selected_obj_ids, cameras_extent, removal_thresh):
     selected_obj_ids = torch.tensor(selected_obj_ids).cuda()
+
+    onnx_classifier = ONNXRemovalClassifier()
     with torch.no_grad():
         logits3d = classifier(gaussians._objects_dc.permute(2,0,1))
         prob_obj3d = torch.softmax(logits3d,dim=0)
+
+        prob_onnx = onnx_classifier.predict(gaussians._objects_dc.permute(2,0,1))
         mask = prob_obj3d[selected_obj_ids, :, :] > removal_thresh
         mask3d = mask.any(dim=0).squeeze()
+
+
 
         mask3d_convex = points_inside_convex_hull(gaussians._xyz.detach(),mask3d,outlier_factor=1.0)
         mask3d = torch.logical_or(mask3d,mask3d_convex)
 
         mask3d = mask3d.float()[:,None,None]
+
+    # Save mask3d and xyz coordinates as NPY files
+    mask3d_cpu = mask3d.cpu().numpy()
+    xyz_cpu = gaussians._xyz.detach().cpu().numpy()
 
     # fix some gaussians
     gaussians.removal_setup(opt,mask3d)
@@ -87,6 +123,9 @@ def removal_setup(opt, model_path, iteration, views, gaussians, pipeline, backgr
     
     # save gaussians
     point_cloud_path = os.path.join(model_path, "point_cloud_object_removal/iteration_{}".format(iteration))
+
+    np.save(os.path.join(point_cloud_path, "mask3d.npy"), mask3d_cpu)
+    np.save(os.path.join(point_cloud_path, "xyz_coordinates.npy"), xyz_cpu)
     gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
 
     return gaussians
