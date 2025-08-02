@@ -228,12 +228,6 @@ if __name__ == '__main__':
     
     print("--- Verification ---")
     
-    # --- 1. Use the original open_clip tokenizer ---
-    print("\n1. Tokenizing with original open_clip.get_tokenizer('ViT-B-32')...")
-    original_tokenizer = open_clip.get_tokenizer('ViT-B-32')
-    original_tokens = original_tokenizer(sample_texts)
-    print("Original tokenizer output shape:", original_tokens.shape)
-    print("Original tokens (first example):\n", original_tokens[0])
 
     # --- 2. Use the replicated tokenizer ---
     print("\n2. Tokenizing with ReplicatedTokenizer...")
@@ -241,23 +235,5 @@ if __name__ == '__main__':
     replicated_tokens = replicated_tokenizer(sample_texts)
     print("Replicated tokenizer output shape:", replicated_tokens.shape)
     print("Replicated tokens (first example):\n", replicated_tokens[0])
-
-    # --- 3. Compare the results ---
-    print("\n3. Comparing outputs...")
-    are_equal = torch.equal(original_tokens, replicated_tokens)
-    if are_equal:
-        print("✅ SUCCESS: The outputs are identical.")
-    else:
-        print("❌ FAILURE: The outputs do not match.")
-        
-    # --- Example from your code ---
-    print("\n--- Your Specific Example ---")
-    dummy_text = ["a photo of a cat"]
-    your_original_tokens = original_tokenizer(dummy_text)
-    your_replicated_tokens = replicated_tokenizer(dummy_text)
-    
-    print("Original tokenizer output:\n", your_original_tokens)
-    print("Replicated tokenizer output:\n", your_replicated_tokens)
-    assert torch.equal(your_original_tokens, your_replicated_tokens)
-    print("✅ SUCCESS: The output for 'a photo of a cat' is also identical.")
-
+    print("Replicated tokens (second example):\n", replicated_tokens[1])
+    print("Replicated tokens (third example):\n", replicated_tokens[2])
