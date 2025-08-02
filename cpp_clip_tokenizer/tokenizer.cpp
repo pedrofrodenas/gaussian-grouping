@@ -8,13 +8,20 @@
 #include <cctype>
 #include <limits>
 #include <fstream>
+#include <regex>
+#include <codecvt>
+#include <locale>
 
 class ReplicatedTokenizer {
 private:
     int context_length;
     std::array<wchar_t, 256> byte_encoder;
+    std::map<wchar_t, unsigned char> byte_decoder;
     std::map<std::wstring, int> encoder;
+    std::map<int, std::wstring> decoder;  // Fixed: int -> std::wstring
     std::map<std::pair<std::wstring, std::wstring>, int> bpe_ranks;
+    std::map<std::wstring, std::wstring> cache;
+    std::wregex pat;
     int sot_token_id;
     int eot_token_id;
 
@@ -42,6 +49,32 @@ private:
         return pairs;
     }
 
+    std::wstring basic_clean(const std::wstring& text) {
+        // Simple HTML unescaping for common entities
+        std::wstring result;
+        std::map<std::wstring, wchar_t> entities = {
+            {L"&amp;", L'&'}, {L"&lt;", L'<'}, {L"&gt;", L'>'},
+            {L"&quot;", L'"'}, {L"&apos;", L'\''}, {L"&nbsp;", L' '}
+        };
+        size_t i = 0;
+        while (i < text.length()) {
+            bool matched = false;
+            for (const auto& [entity, ch] : entities) {
+                if (text.substr(i, entity.length()) == entity) {
+                    result += ch;
+                    i += entity.length();
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                result += text[i];
+                i++;
+            }
+        }
+        return result;
+    }
+
     std::wstring whitespace_clean(const std::wstring& text) {
         std::wstring cleaned, word;
         for (wchar_t c : text) {
@@ -63,6 +96,7 @@ private:
     }
 
     std::wstring bpe(const std::wstring& token) {
+        if (cache.count(token)) return cache[token];
         if (token.empty()) return token + L"</w>";
         std::vector<std::wstring> word;
         for (size_t i = 0; i < token.size() - 1; ++i) word.emplace_back(1, token[i]);
@@ -95,27 +129,28 @@ private:
             result += word[i];
             if (i < word.size() - 1) result += L" ";
         }
+        cache[token] = result;
         return result;
     }
 
     std::vector<int> encode(const std::wstring& text) {
         std::vector<int> bpe_tokens;
-        std::wstring cleaned = whitespace_clean(text);
+        std::wstring cleaned = whitespace_clean(basic_clean(text));
         std::transform(cleaned.begin(), cleaned.end(), cleaned.begin(), towlower);
-        std::vector<std::wstring> tokens;
-        std::wstring current;
-        for (wchar_t c : cleaned) {
-            if (std::isspace(c)) {
-                if (!current.empty()) tokens.push_back(current);
-                current.clear();
-            } else {
-                current += c;
-            }
-        }
-        if (!current.empty()) tokens.push_back(current);
-        for (const auto& token : tokens) {
+
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
+        std::string utf8_text = converter.to_bytes(cleaned);
+
+        std::regex pat_regex("<start_of_text>|<end_of_text>|'s|'t|'re|'ve|'m|'ll|'d|[a-z]+|[0-9]+|[^\\s a-z0-9]+",
+                             std::regex::ECMAScript | std::regex::icase);
+        std::sregex_iterator it(utf8_text.begin(), utf8_text.end(), pat_regex);
+        std::sregex_iterator end;
+
+        for (; it != end; ++it) {
+            std::string token = it->str();
+            std::wstring wtoken = converter.from_bytes(token);
             std::string utf8;
-            for (wchar_t wc : token) {
+            for (wchar_t wc : wtoken) {
                 if (wc <= 0x7F) utf8 += static_cast<char>(wc);
                 else if (wc <= 0x7FF) {
                     utf8 += static_cast<char>(0xC0 | (wc >> 6));
@@ -151,16 +186,41 @@ public:
         if (!file.is_open()) throw std::runtime_error("Failed to open merges file");
         std::string line;
         std::vector<std::string> merges;
-        std::getline(file, line); // Skip the version line
-        while (std::getline(file, line)) {
+        std::getline(file, line); // Skip version line
+        size_t merge_count = 0;
+        while (std::getline(file, line) && merge_count < 48894) { // Changed from 48895 to 48894
             if (!line.empty()) merges.push_back(line);
+            merge_count++;
         }
         file.close();
 
         byte_encoder = bytes_to_unicode();
+        for (size_t i = 0; i < 256; ++i) {
+            byte_decoder[byte_encoder[i]] = static_cast<unsigned char>(i);
+        }
+
+        // Define bs as in bytes_to_unicode
+        std::vector<int> bs;
+        for (int i = L'!'; i <= L'~'; ++i) bs.push_back(i);     // 33-126
+        for (int i = L'¡'; i <= L'¬'; ++i) bs.push_back(i);     // 161-172
+        for (int i = L'®'; i <= L'ÿ'; ++i) bs.push_back(i);     // 174-255
+        std::set<int> bs_set(bs.begin(), bs.end());
+        for (int b = 0; b < 256; ++b) {
+            if (bs_set.find(b) == bs_set.end()) {
+                bs.push_back(b);                                // 0-32, 127, 173
+            }
+        }
+
+        // Build vocab using bs order
         std::vector<std::wstring> vocab;
-        for (wchar_t c : byte_encoder) vocab.emplace_back(1, c);
-        for (wchar_t c : byte_encoder) vocab.push_back(std::wstring(1, c) + L"</w>");
+        for (int b : bs) {
+            vocab.push_back(std::wstring(1, byte_encoder[b]));
+        }
+        for (int b : bs) {
+            vocab.push_back(std::wstring(1, byte_encoder[b]) + L"</w>");
+        }
+
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
         for (const auto& merge : merges) {
             std::string part1, part2;
             bool first = true;
@@ -169,11 +229,15 @@ public:
                 else if (first) part1 += c;
                 else part2 += c;
             }
-            vocab.push_back(std::wstring(part1.begin(), part1.end()) + std::wstring(part2.begin(), part2.end()));
+            vocab.push_back(converter.from_bytes(part1) + converter.from_bytes(part2));
         }
         std::vector<std::wstring> special_tokens = {L"<start_of_text>", L"<end_of_text>"};
         vocab.insert(vocab.end(), special_tokens.begin(), special_tokens.end());
-        for (size_t i = 0; i < vocab.size(); ++i) encoder[vocab[i]] = i;
+
+        for (size_t i = 0; i < vocab.size(); ++i) {
+            encoder[vocab[i]] = static_cast<int>(i);
+            decoder[static_cast<int>(i)] = vocab[i];
+        }
         for (size_t i = 0; i < merges.size(); ++i) {
             std::string part1, part2;
             bool first = true;
@@ -182,10 +246,13 @@ public:
                 else if (first) part1 += c;
                 else part2 += c;
             }
-            bpe_ranks[{std::wstring(part1.begin(), part1.end()), std::wstring(part2.begin(), part2.end())}] = i;
+            bpe_ranks[{converter.from_bytes(part1), converter.from_bytes(part2)}] = static_cast<int>(i);
         }
+        for (const auto& t : special_tokens) cache[t] = t;
         sot_token_id = encoder[L"<start_of_text>"];
         eot_token_id = encoder[L"<end_of_text>"];
+        pat = std::wregex(L"<start_of_text>|<end_of_text>|'s|'t|'re|'ve|'m|'ll|'d|[\\p{L}]+|[\\p{N}]|[^\\s\\p{L}\\p{N}]+",
+                          std::regex::ECMAScript | std::regex::icase);
     }
 
     std::vector<std::vector<int>> operator()(const std::vector<std::wstring>& texts, int ctx_len = -1) {
@@ -212,17 +279,24 @@ int main() {
     std::vector<std::wstring> sample_texts = {
         L"a photo of a cat",
         L"a drawing of a dog on a skateboard",
-        L"This is a much longer sentence to test truncation and ensure everything works as expected."
+        L"This is a much longer sentence to test truncation and ensure everything works as expected.",
+        L"don't stop"
     };
     std::cout << "--- Verification ---\n\n2. Tokenizing with ReplicatedTokenizer...\n";
-    ReplicatedTokenizer tokenizer("/home/prodenas/Projects/gaussian-grouping/cpp_clip_tokenizer/bpe_simple_vocab_16e6.txt");
-    auto tokens = tokenizer(sample_texts);
-    std::cout << "Replicated tokenizer output shape: [" << tokens.size() << ", " << tokens[0].size() << "]\n";
-    std::cout << "Replicated tokens (first example):\n[";
-    for (size_t i = 0; i < tokens[0].size(); ++i) {
-        std::cout << tokens[0][i];
-        if (i < tokens[0].size() - 1) std::cout << ", ";
+    try {
+        ReplicatedTokenizer tokenizer("/home/prodenas/Projects/gaussian-grouping/cpp_clip_tokenizer/bpe_simple_vocab_16e6.txt");
+        auto tokens = tokenizer(sample_texts);
+        std::cout << "Replicated tokenizer output shape: [" << tokens.size() << ", " << tokens[0].size() << "]\n";
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            std::cout << "Replicated tokens (example " << i + 1 << "):\n[";
+            for (size_t j = 0; j < tokens[i].size(); ++j) {
+                std::cout << tokens[i][j];
+                if (j < tokens[i].size() - 1) std::cout << ", ";
+            }
+            std::cout << "]\n";
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
     }
-    std::cout << "]\n";
     return 0;
 }
