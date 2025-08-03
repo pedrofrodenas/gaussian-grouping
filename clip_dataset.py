@@ -128,6 +128,11 @@ for label_id in sorted(list(all_labels)):
         embeddings_by_label[label_id] = np.vstack(current_label_embeddings)
         print(f"✅ Generated and stored {len(current_label_embeddings)} embeddings for Label ID {label_id}.")
 
+dst_dir = "output/figuritas/point_cloud_object_removal/iteration_30000"
+
+for key, array in embeddings_by_label.items():
+    f_name = f"array_{key}.npy"
+    np.save(os.path.join(dst_dir, f_name), array)
 
 # --- 4. Text-to-Image Matching ---
 
