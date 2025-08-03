@@ -86,6 +86,9 @@ import onnxruntime as ort
 # Create inference session
 ort_session = ort.InferenceSession(output_path)
 
+dummy_text_tokens = tokenizer(["another text"])
+dummy_eot_indices = (dummy_text_tokens == EOS_ID).long().argmax(dim=-1)
+
 # Prepare inputs
 ort_inputs = {
     'text_tokens': dummy_text_tokens.numpy(),
