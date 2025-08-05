@@ -85,21 +85,44 @@ endif()
 message(STATUS "ONNX Runtime include directory: ${ONNXRUNTIME_INCLUDE_DIRS}")
 message(STATUS "ONNX Runtime library: ${ONNXRUNTIME_LIB}")
 
+find_package(ZLIB REQUIRED)
+
+# Create cnpy library from source
+add_library(cnpy STATIC cnpy.cpp cnpy.h)
+
+target_include_directories(cnpy PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_link_libraries(cnpy PUBLIC ZLIB::ZLIB)
+
 # Create the executable
 set(SOURCES
     clip_inference.cpp  # Assuming your main file is named main.cpp
 )
 
+set(SOURCES_B
+        text_matching.cpp  # Assuming your main file is named main.cpp
+)
+
 add_executable(${PROJECT_NAME} ${SOURCES})
+
+add_executable(FULL_MATCHER ${SOURCES_B})
 
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE 
     ${ONNXRUNTIME_INCLUDE_DIRS}
 )
 
+target_include_directories(FULL_MATCHER PRIVATE
+        ${ONNXRUNTIME_INCLUDE_DIRS}
+)
+
 # Link libraries
 target_link_libraries(${PROJECT_NAME} PRIVATE 
     ${ONNXRUNTIME_LIB}
+)
+
+target_link_libraries(FULL_MATCHER PRIVATE
+        ${ONNXRUNTIME_LIB} cnpy
 )
 
 # Copy ONNX Runtime shared library to output directory (for runtime)
