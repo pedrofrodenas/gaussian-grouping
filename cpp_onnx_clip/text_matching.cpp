@@ -492,11 +492,60 @@ public:
     int get_eot_token_id() const { return eot_token_id; }
 };
 
+// Helper functions for matching logic
+double compute_norm(const float* vec, size_t size) {
+    double sum_sq = 0.0;
+    for (size_t i = 0; i < size; ++i) {
+        sum_sq += static_cast<double>(vec[i]) * vec[i];
+    }
+    return std::sqrt(sum_sq);
+}
+
+float dot_product(const float* a, const float* b, size_t size) {
+    float sum = 0.0f;
+    for (size_t i = 0; i < size; ++i) {
+        sum += a[i] * b[i];
+    }
+    return sum;
+}
+
+std::map<int, float> compute_mean_similarities(const float* text_emb, size_t feature_dim, const NumpyArrayLoader& loader) {
+    std::map<int, float> mean_similarities;
+    auto array_ids = loader.getArrayIds();
+    for (int array_id : array_ids) {
+        const cnpy::NpyArray* array = loader.getArray(array_id);
+        if (!array || array->shape.size() != 2) {
+            std::cerr << "Invalid array for ID " << array_id << std::endl;
+            continue;
+        }
+        size_t n_images = array->shape[0];
+        size_t emb_dim = array->shape[1];
+        if (emb_dim != feature_dim) {
+            std::cerr << "Embedding dimension mismatch for ID " << array_id << ": expected " << feature_dim << ", got " << emb_dim << std::endl;
+            continue;
+        }
+        const float* image_embeddings = loader.getFloatData(array_id);
+        if (!image_embeddings) {
+            std::cerr << "Failed to get data for ID " << array_id << std::endl;
+            continue;
+        }
+        float total_similarity = 0.0f;
+        for (size_t k = 0; k < n_images; ++k) {
+            const float* image_emb = image_embeddings + k * emb_dim;
+            float similarity = dot_product(text_emb, image_emb, emb_dim);
+            total_similarity += similarity;
+        }
+        float mean_similarity = total_similarity / static_cast<float>(n_images);
+        mean_similarities[array_id] = mean_similarity;
+    }
+    return mean_similarities;
+}
+
 int main() {
     try {
         // 1. Instantiate the tokenizer
         ReplicatedTokenizer tokenizer("/home/prodenas/Projects/gaussian-grouping/cpp_clip_tokenizer/bpe_simple_vocab_16e6.txt");
-        std::vector<std::wstring> texts = {L"a photo of a cat", L"another text"};
+        std::vector<std::wstring> texts = {L"an apple"};
         auto tokens = tokenizer(texts);
 
         // 2. Prepare eot_indices
@@ -508,7 +557,6 @@ int main() {
                 int index = std::distance(seq.begin(), it);
                 eot_indices.push_back(static_cast<int64_t>(index));
             } else {
-                // EOT should always be present, but handle the edge case
                 throw std::runtime_error("EOT token not found in tokenized sequence");
             }
         }
@@ -522,7 +570,7 @@ int main() {
         }
 
         size_t batch_size = tokens.size();
-        size_t context_length = tokens[0].size(); // 77 by default
+        size_t context_length = tokens[0].size();
 
         // 4. Load the ONNX model
         Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "OpenCLIP_Inference");
@@ -557,27 +605,61 @@ int main() {
         float* output_data = output_tensor.GetTensorMutableData<float>();
         auto output_shape_info = output_tensor.GetTensorTypeAndShapeInfo();
         std::vector<int64_t> output_shape = output_shape_info.GetShape();
-        size_t feature_dim = output_shape[1]; // Typically 512 for ViT-B-32
+        size_t feature_dim = output_shape[1];
 
         std::cout << "Output shape: [" << output_shape[0] << ", " << output_shape[1] << "]\n";
         for (size_t i = 0; i < batch_size; ++i) {
             std::cout << "Text " << i + 1 << " features: ";
-            for (size_t j = 0; j < std::min<size_t>(feature_dim, 5); ++j) { // Print first 5 features for brevity
+            for (size_t j = 0; j < std::min<size_t>(feature_dim, 5); ++j) {
                 std::cout << output_data[i * feature_dim + j] << " ";
             }
             std::cout << "...\n";
         }
 
+        // 9. Load image embeddings
         std::string folder_path = "/home/prodenas/Projects/gaussian-grouping/output/figuritas/point_cloud_object_removal/iteration_30000";
-
         NumpyArrayLoader loader(folder_path);
-
-        // Load all arrays
         if (!loader.loadArrays()) {
             std::cerr << "Failed to load arrays from " << folder_path << std::endl;
             return 1;
         }
 
+        // 10. Perform matching for each text query
+        for (size_t i = 0; i < batch_size; ++i) {
+            std::wcout << L"\nSearching for: '" << texts[i] << L"'\n";
+
+            // Normalize text embedding
+            float* text_emb = output_data + i * feature_dim;
+            double norm = compute_norm(text_emb, feature_dim);
+            if (norm > 0) {
+                for (size_t j = 0; j < feature_dim; ++j) {
+                    text_emb[j] /= static_cast<float>(norm);
+                }
+            } else {
+                std::cerr << "Warning: Text embedding has zero norm for query " << i << std::endl;
+                continue;
+            }
+
+            // Compute similarities with image embeddings
+            auto mean_similarities = compute_mean_similarities(text_emb, feature_dim, loader);
+            if (mean_similarities.empty()) {
+                std::cout << "Cannot perform search, no valid embeddings loaded.\n";
+                continue;
+            }
+
+            // Find the best match
+            auto best_it = std::max_element(mean_similarities.begin(), mean_similarities.end(),
+                [](const auto& a, const auto& b) { return a.second < b.second; });
+            int best_id = best_it->first;
+            float best_score = best_it->second;
+
+            // Print results
+            std::cout << "\nCalculated Mean Similarity Scores:\n";
+            for (const auto& [label_id, score] : mean_similarities) {
+                std::cout << "  - Object ID " << label_id << ": " << score << "\n";
+            }
+            std::cout << "\nBest match is Object ID: " << best_id << " with score " << best_score << "\n";
+        }
 
     } catch (const Ort::Exception& e) {
         std::cerr << "ONNX Runtime Error: " << e.what() << " (Code: " << e.GetOrtErrorCode() << ")\n";
