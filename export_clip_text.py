@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import open_clip
 import onnx
+import os
 
 class TextEncoderWrapper(nn.Module):
     def __init__(self, model):
@@ -55,13 +56,15 @@ with torch.no_grad():
         print(f"Max difference: {torch.max(torch.abs(wrapper_output - original_output))}")
 
 # 5. Export to ONNX
+
+dst_onnx_folder = "/home/prodenas/Projects/gaussian-grouping/output/figuritas/point_cloud_object_removal/iteration_30000"
 output_path = "text_encoder.onnx"
 
 
 torch.onnx.export(
     text_encoder_wrapper,
     (dummy_text_tokens, dummy_eot_indices),
-    output_path,
+    os.path.join(dst_onnx_folder, output_path),
     export_params=True,
     opset_version=14,  # Use opset 11 for better compatibility
     do_constant_folding=True,

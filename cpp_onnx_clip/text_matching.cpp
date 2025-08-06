@@ -545,7 +545,7 @@ int main() {
     try {
         // 1. Instantiate the tokenizer
         ReplicatedTokenizer tokenizer("/home/prodenas/Projects/gaussian-grouping/cpp_clip_tokenizer/bpe_simple_vocab_16e6.txt");
-        std::vector<std::wstring> texts = {L"an apple"};
+        std::vector<std::wstring> texts = {L"an tin of tomato"};
         auto tokens = tokenizer(texts);
 
         // 2. Prepare eot_indices
